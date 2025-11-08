@@ -1,13 +1,252 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
-
+from pydantic import BaseModel
+import mysql.connector
+import os
+from typing import Optional
 
 app = FastAPI(
-    title="Vercel + FastAPI",
-    description="Vercel + FastAPI",
+    title="VK Mini App API",
+    description="API для VK Mini App - Вынос мусора",
     version="1.0.0",
 )
 
+# Модели данных
+class VKUserData(BaseModel):
+    id: int
+    first_name: str
+    last_name: str
+    photo_100: Optional[str] = None
+    photo_200: Optional[str] = None
+    access_token: Optional[str] = None
+
+class UserUpdate(BaseModel):
+    phone: Optional[str] = None
+    email: Optional[str] = None
+
+class AddressCreate(BaseModel):
+    user_id: int
+    title: str
+    address_text: str
+
+# Подключение к БД
+def get_db_connection():
+    return mysql.connector.connect(
+        host=os.getenv('DB_HOST'),
+        user=os.getenv('DB_USER'),
+        password=os.getenv('DB_PASSWORD'),
+        database=os.getenv('DB_NAME')
+    )
+
+# Эндпоинты для пользователей
+
+@app.post("/api/auth/vk")
+async def auth_vk(user_data: VKUserData):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    try:
+        # Проверяем существование пользователя
+        cursor.execute("SELECT * FROM users WHERE vk_id = %s", (user_data.id,))
+        existing_user = cursor.fetchone()
+        
+        if existing_user:
+            # Обновляем существующего пользователя
+            cursor.execute(
+                """UPDATE users 
+                SET first_name = %s, last_name = %s, photo_100 = %s, photo_200 = %s, updated_at = NOW() 
+                WHERE vk_id = %s""",
+                (user_data.first_name, user_data.last_name, user_data.photo_100, user_data.photo_200, user_data.id)
+            )
+            user = existing_user
+        else:
+            # Создаем нового пользователя
+            cursor.execute(
+                """INSERT INTO users (vk_id, first_name, last_name, photo_100, photo_200) 
+                VALUES (%s, %s, %s, %s, %s)""",
+                (user_data.id, user_data.first_name, user_data.last_name, user_data.photo_100, user_data.photo_200)
+            )
+            user_id = cursor.lastrowid
+            
+            cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+            user = cursor.fetchone()
+        
+        conn.commit()
+        
+        return {
+            "success": True,
+            "data": user
+        }
+        
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.get("/api/users/{vk_id}")
+async def get_user_by_vk_id(vk_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    try:
+        cursor.execute("SELECT * FROM users WHERE vk_id = %s", (vk_id,))
+        user = cursor.fetchone()
+        
+        if user:
+            return {
+                "success": True,
+                "data": user
+            }
+        else:
+            raise HTTPException(status_code=404, detail="User not found")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.put("/api/users/{vk_id}/phone")
+async def update_user_phone(vk_id: int, user_update: UserUpdate):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    try:
+        cursor.execute(
+            "UPDATE users SET phone = %s, updated_at = NOW() WHERE vk_id = %s",
+            (user_update.phone, vk_id)
+        )
+        
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        cursor.execute("SELECT * FROM users WHERE vk_id = %s", (vk_id,))
+        user = cursor.fetchone()
+        
+        conn.commit()
+        
+        return {
+            "success": True,
+            "data": user
+        }
+        
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.put("/api/users/{vk_id}/email")
+async def update_user_email(vk_id: int, user_update: UserUpdate):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    try:
+        cursor.execute(
+            "UPDATE users SET email = %s, updated_at = NOW() WHERE vk_id = %s",
+            (user_update.email, vk_id)
+        )
+        
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        cursor.execute("SELECT * FROM users WHERE vk_id = %s", (vk_id,))
+        user = cursor.fetchone()
+        
+        conn.commit()
+        
+        return {
+            "success": True,
+            "data": user
+        }
+        
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        conn.close()
+
+# Эндпоинты для адресов
+
+@app.get("/api/users/{user_id}/addresses")
+async def get_user_addresses(user_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    try:
+        cursor.execute("SELECT * FROM addresses WHERE user_id = %s ORDER BY created_at DESC", (user_id,))
+        addresses = cursor.fetchall()
+        
+        return {
+            "success": True,
+            "data": addresses
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.post("/api/addresses")
+async def create_address(address_data: AddressCreate):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    try:
+        cursor.execute(
+            "INSERT INTO addresses (user_id, title, address_text) VALUES (%s, %s, %s)",
+            (address_data.user_id, address_data.title, address_data.address_text)
+        )
+        
+        address_id = cursor.lastrowid
+        cursor.execute("SELECT * FROM addresses WHERE id = %s", (address_id,))
+        address = cursor.fetchone()
+        
+        conn.commit()
+        
+        return {
+            "success": True,
+            "data": address
+        }
+        
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.delete("/api/addresses/{address_id}")
+async def delete_address(address_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("DELETE FROM addresses WHERE id = %s", (address_id,))
+        
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Address not found")
+        
+        conn.commit()
+        
+        return {
+            "success": True,
+            "message": "Address deleted successfully"
+        }
+        
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        conn.close()
+
+# Тестовые эндпоинты (можно удалить)
 
 @app.get("/api/data")
 def get_sample_data():
@@ -21,7 +260,6 @@ def get_sample_data():
         "timestamp": "2024-01-01T00:00:00Z"
     }
 
-
 @app.get("/api/items/{item_id}")
 def get_item(item_id: int):
     return {
@@ -33,7 +271,7 @@ def get_item(item_id: int):
         "timestamp": "2024-01-01T00:00:00Z"
     }
 
-
+# Главная страница
 @app.get("/", response_class=HTMLResponse)
 def read_root():
     return """
@@ -42,303 +280,87 @@ def read_root():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Vercel + FastAPI</title>
-        <link rel="icon" type="image/x-icon" href="/favicon.ico">
+        <title>VK Mini App API</title>
         <style>
-            * {
-                margin: 0;
-                padding: 0;
-                box-sizing: border-box;
-            }
-
             body {
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
-                background-color: #000000;
-                color: #ffffff;
-                line-height: 1.6;
-                min-height: 100vh;
-                display: flex;
-                flex-direction: column;
-            }
-
-            header {
-                border-bottom: 1px solid #333333;
-                padding: 0;
-            }
-
-            nav {
-                max-width: 1200px;
-                margin: 0 auto;
-                display: flex;
-                align-items: center;
-                padding: 1rem 2rem;
-                gap: 2rem;
-            }
-
-            .logo {
-                font-size: 1.25rem;
-                font-weight: 600;
-                color: #ffffff;
-                text-decoration: none;
-            }
-
-            .nav-links {
-                display: flex;
-                gap: 1.5rem;
-                margin-left: auto;
-            }
-
-            .nav-links a {
-                text-decoration: none;
-                color: #888888;
-                padding: 0.5rem 1rem;
-                border-radius: 6px;
-                transition: all 0.2s ease;
-                font-size: 0.875rem;
-                font-weight: 500;
-            }
-
-            .nav-links a:hover {
-                color: #ffffff;
-                background-color: #111111;
-            }
-
-            main {
-                flex: 1;
-                max-width: 1200px;
-                margin: 0 auto;
-                padding: 4rem 2rem;
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                text-align: center;
-            }
-
-            .hero {
-                margin-bottom: 3rem;
-            }
-
-            .hero-code {
-                margin-top: 2rem;
-                width: 100%;
-                max-width: 900px;
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            }
-
-            .hero-code pre {
-                background-color: #0a0a0a;
-                border: 1px solid #333333;
-                border-radius: 8px;
-                padding: 1.5rem;
-                text-align: left;
-                grid-column: 1 / -1;
-            }
-
-            h1 {
-                font-size: 3rem;
-                font-weight: 700;
-                margin-bottom: 1rem;
-                background: linear-gradient(to right, #ffffff, #888888);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                background-clip: text;
-            }
-
-            .subtitle {
-                font-size: 1.25rem;
-                color: #888888;
-                margin-bottom: 2rem;
-                max-width: 600px;
-            }
-
-            .cards {
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-                gap: 1.5rem;
-                width: 100%;
-                max-width: 900px;
-            }
-
-            .card {
-                background-color: #111111;
-                border: 1px solid #333333;
-                border-radius: 8px;
-                padding: 1.5rem;
-                transition: all 0.2s ease;
-                text-align: left;
-            }
-
-            .card:hover {
-                border-color: #555555;
-                transform: translateY(-2px);
-            }
-
-            .card h3 {
-                font-size: 1.125rem;
-                font-weight: 600;
-                margin-bottom: 0.5rem;
-                color: #ffffff;
-            }
-
-            .card p {
-                color: #888888;
-                font-size: 0.875rem;
-                margin-bottom: 1rem;
-            }
-
-            .card a {
-                display: inline-flex;
-                align-items: center;
-                color: #ffffff;
-                text-decoration: none;
-                font-size: 0.875rem;
-                font-weight: 500;
-                padding: 0.5rem 1rem;
-                background-color: #222222;
-                border-radius: 6px;
-                border: 1px solid #333333;
-                transition: all 0.2s ease;
-            }
-
-            .card a:hover {
-                background-color: #333333;
-                border-color: #555555;
-            }
-
-            .status-badge {
-                display: inline-flex;
-                align-items: center;
-                gap: 0.5rem;
-                background-color: #0070f3;
-                color: #ffffff;
-                padding: 0.25rem 0.75rem;
-                border-radius: 20px;
-                font-size: 0.75rem;
-                font-weight: 500;
-                margin-bottom: 2rem;
-            }
-
-            .status-dot {
-                width: 6px;
-                height: 6px;
-                background-color: #00ff88;
-                border-radius: 50%;
-            }
-
-            pre {
-                background-color: #0a0a0a;
-                border: 1px solid #333333;
-                border-radius: 6px;
-                padding: 1rem;
-                overflow-x: auto;
+                font-family: -apple-system, BlinkMacSystemFont, sans-serif;
                 margin: 0;
+                padding: 2rem;
+                background: #f5f5f5;
             }
-
-            code {
-                font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
-                font-size: 0.85rem;
-                line-height: 1.5;
-                color: #ffffff;
+            .container {
+                max-width: 800px;
+                margin: 0 auto;
+                background: white;
+                padding: 2rem;
+                border-radius: 8px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
             }
-
-            /* Syntax highlighting */
-            .keyword {
-                color: #ff79c6;
+            h1 {
+                color: #333;
+                border-bottom: 2px solid #0070f3;
+                padding-bottom: 0.5rem;
             }
-
-            .string {
-                color: #f1fa8c;
+            .endpoint {
+                background: #f8f9fa;
+                padding: 1rem;
+                margin: 1rem 0;
+                border-radius: 6px;
+                border-left: 4px solid #0070f3;
             }
-
-            .function {
-                color: #50fa7b;
-            }
-
-            .class {
-                color: #8be9fd;
-            }
-
-            .module {
-                color: #8be9fd;
-            }
-
-            .variable {
-                color: #f8f8f2;
-            }
-
-            .decorator {
-                color: #ffb86c;
-            }
-
-            @media (max-width: 768px) {
-                nav {
-                    padding: 1rem;
-                    flex-direction: column;
-                    gap: 1rem;
-                }
-
-                .nav-links {
-                    margin-left: 0;
-                }
-
-                main {
-                    padding: 2rem 1rem;
-                }
-
-                h1 {
-                    font-size: 2rem;
-                }
-
-                .hero-code {
-                    grid-template-columns: 1fr;
-                }
-
-                .cards {
-                    grid-template-columns: 1fr;
-                }
+            .method {
+                display: inline-block;
+                background: #0070f3;
+                color: white;
+                padding: 0.25rem 0.5rem;
+                border-radius: 4px;
+                font-weight: bold;
+                margin-right: 1rem;
             }
         </style>
     </head>
     <body>
-        <header>
-            <nav>
-                <a href="/" class="logo">Vercel + FastAPI</a>
-                <div class="nav-links">
-                    <a href="/docs">API Docs</a>
-                    <a href="/api/data">API</a>
-                </div>
-            </nav>
-        </header>
-        <main>
-            <div class="hero">
-                <h1>Vercel + FastAPI</h1>
-                <div class="hero-code">
-                    <pre><code><span class="keyword">from</span> <span class="module">fastapi</span> <span class="keyword">import</span> <span class="class">FastAPI</span>
-
-<span class="variable">app</span> = <span class="class">FastAPI</span>()
-
-<span class="decorator">@app.get</span>(<span class="string">"/"</span>)
-<span class="keyword">def</span> <span class="function">read_root</span>():
-    <span class="keyword">return</span> {<span class="string">"Python"</span>: <span class="string">"on Vercel"</span>}</code></pre>
-                </div>
+        <div class="container">
+            <h1>🚀 VK Mini App API</h1>
+            <p>API сервер для приложения "Вынос мусора"</p>
+            
+            <div class="endpoint">
+                <span class="method">POST</span>
+                <strong>/api/auth/vk</strong> - Аутентификация через VK
             </div>
-
-            <div class="cards">
-                <div class="card">
-                    <h3>Interactive API Docs</h3>
-                    <p>Explore this API's endpoints with the interactive Swagger UI. Test requests and view response schemas in real-time.</p>
-                    <a href="/docs">Open Swagger UI →</a>
-                </div>
-
-                <div class="card">
-                    <h3>Sample Data</h3>
-                    <p>Access sample JSON data through our REST API. Perfect for testing and development purposes.</p>
-                    <a href="/api/data">Get Data →</a>
-                </div>
-
+            
+            <div class="endpoint">
+                <span class="method">GET</span>
+                <strong>/api/users/&#123;vk_id&#125;</strong> - Получить пользователя по VK ID
             </div>
-        </main>
+            
+            <div class="endpoint">
+                <span class="method">PUT</span>
+                <strong>/api/users/&#123;vk_id&#125;/phone</strong> - Обновить телефон
+            </div>
+            
+            <div class="endpoint">
+                <span class="method">PUT</span>
+                <strong>/api/users/&#123;vk_id&#125;/email</strong> - Обновить email
+            </div>
+            
+            <div class="endpoint">
+                <span class="method">GET</span>
+                <strong>/api/users/&#123;user_id&#125;/addresses</strong> - Получить адреса пользователя
+            </div>
+            
+            <div class="endpoint">
+                <span class="method">POST</span>
+                <strong>/api/addresses</strong> - Создать адрес
+            </div>
+            
+            <div class="endpoint">
+                <span class="method">DELETE</span>
+                <strong>/api/addresses/&#123;address_id&#125;</strong> - Удалить адрес
+            </div>
+            
+            <p><a href="/docs">📚 Interactive API Documentation</a></p>
+        </div>
     </body>
     </html>
     """
